@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../core/demo_backend.dart';
 import 'ordering_models.dart';
 
 /// Cart + checkout. Customer name/phone only — no auth.
@@ -13,6 +14,7 @@ class CartScreen extends StatefulWidget {
     required this.restaurantName,
     required this.settings,
     required this.cart,
+    this.restaurantPublicToken,
   });
 
   final String restaurantId;
@@ -20,6 +22,9 @@ class CartScreen extends StatefulWidget {
   final String restaurantName;
   final RestaurantSettingsData settings;
   final List<CartEntry> cart;
+
+  /// Restaurant public_token for place_order RPC validation.
+  final String? restaurantPublicToken;
 
   @override
   State<CartScreen> createState() => _CartScreenState();
@@ -34,12 +39,14 @@ class _CartScreenState extends State<CartScreen> {
   late List<CartEntry> _cart;
   late int _pickupMinutes;
   bool _placing = false;
+  String? _restaurantToken;
 
   @override
   void initState() {
     super.initState();
     _cart = widget.cart;
     _pickupMinutes = widget.settings.prepMinutes;
+    _restaurantToken = widget.restaurantPublicToken;
   }
 
   @override
@@ -50,6 +57,7 @@ class _CartScreenState extends State<CartScreen> {
     super.dispose();
   }
 
+  // Preview only — server recomputes on place_order.
   int get _subtotal => _cart.fold(0, (s, e) => s + e.lineTotalCents);
   int get _fee => widget.settings.feeCents;
   int get _tax => widget.settings.taxCents(_subtotal);
@@ -68,6 +76,19 @@ class _CartScreenState extends State<CartScreen> {
         _cart.removeWhere((e) => e.lineKey == entry.lineKey);
       }
     });
+  }
+
+  Future<String> _resolveRestaurantToken() async {
+    final existing = _restaurantToken;
+    if (existing != null && existing.isNotEmpty) return existing;
+    final row = await _client
+        .from('restaurants')
+        .select('public_token')
+        .eq('id', widget.restaurantId)
+        .maybeSingle();
+    final token = row?['public_token'] as String? ?? '';
+    _restaurantToken = token;
+    return token;
   }
 
   Future<void> _placeOrder() async {
@@ -89,20 +110,58 @@ class _CartScreenState extends State<CartScreen> {
 
     setState(() => _placing = true);
     try {
-      // Client-generated so the confirmation screen never needs a SELECT as anon.
-      final token = _shortToken();
-      final orderId = await _insertOrder(token);
-      for (final line in _cart) {
-        final itemId = await _insertLine(orderId, line);
-        for (final mod in line.modifiers) {
-          await _client.from('order_item_modifiers').insert({
-            'order_item_id': itemId,
-            'organization_id': widget.organizationId,
-            'modifier_option_id': mod.optionId,
-            'name': mod.name,
-            'price_delta_cents': mod.priceDeltaCents,
-          });
+      final String token;
+      final int confirmedTotal;
+
+      if (DemoMode.enabled) {
+        // Demo HTTP layer has no RPC — keep the direct insert path.
+        token = _shortToken();
+        confirmedTotal = _total;
+        final orderId = await _insertOrder(token);
+        for (final line in _cart) {
+          final itemId = await _insertLine(orderId, line);
+          for (final mod in line.modifiers) {
+            await _client.from('order_item_modifiers').insert({
+              'order_item_id': itemId,
+              'organization_id': widget.organizationId,
+              'modifier_option_id': mod.optionId,
+              'name': mod.name,
+              'price_delta_cents': mod.priceDeltaCents,
+            });
+          }
         }
+      } else {
+        final restToken = await _resolveRestaurantToken();
+        if (restToken.isEmpty) {
+          throw StateError('missing_restaurant_token');
+        }
+        final items = [
+          for (final line in _cart)
+            {
+              'menu_item_id': line.menuItemId,
+              'quantity': line.quantity,
+              'modifiers': [
+                for (final m in line.modifiers) {'option_id': m.optionId},
+              ],
+            },
+        ];
+        final raw = await _client.rpc('place_order', params: {
+          'p_restaurant_id': widget.restaurantId,
+          'p_public_token': restToken,
+          'p_customer_name': name,
+          'p_customer_phone': phone,
+          'p_notes': _notesCtrl.text.trim(),
+          'p_pickup_minutes': _pickupMinutes,
+          'p_items': items,
+        });
+        final map = raw is Map
+            ? Map<String, dynamic>.from(raw)
+            : (raw is List && raw.isNotEmpty
+                ? Map<String, dynamic>.from(raw.first as Map)
+                : <String, dynamic>{});
+        token = map['public_token'] as String? ?? '';
+        confirmedTotal = (map['total_cents'] as num?)?.toInt() ?? _total;
+        if (token.isEmpty) throw StateError('place_order_empty');
       }
 
       if (!mounted) return;
@@ -116,6 +175,7 @@ class _CartScreenState extends State<CartScreen> {
           title: const Text('Order placed'),
           content: Text(
             'Show this code at pickup:\n\n$token\n\n'
+            'Total: ${formatCents(confirmedTotal)}\n'
             'Ready in about $_pickupMinutes minutes.',
           ),
           actions: [
@@ -185,9 +245,9 @@ class _CartScreenState extends State<CartScreen> {
     return itemId;
   }
 
-  /// Short readable pickup code — unique enough for a busy dinner rush.
   String _shortToken() {
-    final t = DateTime.now().millisecondsSinceEpoch.toRadixString(36).toUpperCase();
+    final t =
+        DateTime.now().millisecondsSinceEpoch.toRadixString(36).toUpperCase();
     return t.substring(t.length >= 6 ? t.length - 6 : 0);
   }
 

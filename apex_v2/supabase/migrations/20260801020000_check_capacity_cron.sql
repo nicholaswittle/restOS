@@ -1,0 +1,38 @@
+-- Apex v2 — check-capacity cron documentation
+--
+-- The edge function `check-capacity` is the server-side counterpart of
+-- CapacityEngine.autoAdjust(). It must run on a schedule — client screens only
+-- call CapacityEngine.check() for display, never autoAdjust().
+--
+-- Setup (Dashboard → Edge Functions → Schedules, or SQL with pg_cron + pg_net):
+--
+--   Every 2 minutes, POST to:
+--     ${SUPABASE_URL}/functions/v1/check-capacity
+--   Headers:
+--     Authorization: Bearer ${SERVICE_ROLE_KEY}
+--     Content-Type: application/json
+--   Body: {}
+--
+-- Example pg_cron (requires extensions pg_cron + pg_net):
+--
+--   select cron.schedule(
+--     'apex-check-capacity',
+--     '*/2 * * * *',
+--     $$
+--     select net.http_post(
+--       url := current_setting('app.settings.supabase_url') || '/functions/v1/check-capacity',
+--       headers := jsonb_build_object(
+--         'Authorization', 'Bearer ' || current_setting('app.settings.service_role_key'),
+--         'Content-Type', 'application/json'
+--       ),
+--       body := '{}'::jsonb
+--     );
+--     $$
+--   );
+--
+-- Verify: select * from cron.job where jobname = 'apex-check-capacity';
+--
+-- No schema changes here — capacity_events + restaurant_settings columns already
+-- exist from 20260731000000_smart_capacity.sql.
+
+select 1;

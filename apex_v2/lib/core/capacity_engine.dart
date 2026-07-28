@@ -1,10 +1,11 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../features/ordering/ordering_models.dart';
+import 'demo_backend.dart';
 
 /// Decides whether ordering should be open, paused, or warning customers.
 ///
-/// Capacity = staff clocked in right now × max_orders_per_hour.
+/// Capacity = kitchen staff clocked in × max_orders_per_hour. Servers don't cook.
 /// If staff < auto_pause_threshold and auto_pause is on → pause.
 /// If orders in the last hour >= capacity → warn (longer wait).
 class CapacityEngine {
@@ -12,11 +13,47 @@ class CapacityEngine {
 
   final SupabaseClient _client;
 
+  static const defaultKitchenRoles = [
+    'kitchen',
+    'cook',
+    'chef',
+    'line cook',
+    'line_cook',
+  ];
+
   /// Returns the current capacity status for a restaurant.
+  ///
+  /// [roleFilter] defaults to kitchen roles. If no profiles in the org use
+  /// those roles, falls back to counting all clocked-in staff.
   Future<CapacityStatus> check({
     required String organizationId,
     required String restaurantId,
+    List<String> roleFilter = defaultKitchenRoles,
   }) async {
+    if (!DemoMode.enabled) {
+      try {
+        final raw = await _client.rpc(
+          'capacity_snapshot',
+          params: {'p_restaurant_id': restaurantId},
+        );
+        final map = raw is Map
+            ? Map<String, dynamic>.from(raw)
+            : (raw is List && raw.isNotEmpty
+                ? Map<String, dynamic>.from(raw.first as Map)
+                : null);
+        if (map != null) {
+          return CapacityStatus(
+            staffOnShift: (map['staff_on_shift'] as num?)?.toInt() ?? 0,
+            ordersLastHour: (map['orders_last_hour'] as num?)?.toInt() ?? 0,
+            maxCapacity: (map['max_capacity'] as num?)?.toInt() ?? 0,
+            state: _parseState(map['state'] as String?),
+          );
+        }
+      } catch (_) {
+        // Fall through to direct queries (staff session / demo).
+      }
+    }
+
     final results = await Future.wait<dynamic>([
       _client
           .from('restaurant_settings')
@@ -25,7 +62,7 @@ class CapacityEngine {
           .maybeSingle(),
       _client
           .from('time_entries')
-          .select('user_id')
+          .select('user_id, profiles(role)')
           .eq('organization_id', organizationId)
           .isFilter('clock_out', null),
       _client
@@ -33,8 +70,17 @@ class CapacityEngine {
           .select('id')
           .eq('organization_id', organizationId)
           .eq('status', 'waiting')
-          .gte('submitted_at',
-              DateTime.now().subtract(const Duration(hours: 1)).toUtc().toIso8601String()),
+          .gte(
+            'submitted_at',
+            DateTime.now()
+                .subtract(const Duration(hours: 1))
+                .toUtc()
+                .toIso8601String(),
+          ),
+      _client
+          .from('profiles')
+          .select('role')
+          .eq('organization_id', organizationId),
     ]);
 
     final settings = results[0] == null
@@ -50,7 +96,23 @@ class CapacityEngine {
       );
     }
 
-    final staffOnShift = (results[1] as List).length;
+    final punches = (results[1] as List).cast<Map<String, dynamic>>();
+    final profileRoles = (results[3] as List)
+        .cast<Map<String, dynamic>>()
+        .map((p) => (p['role'] as String?) ?? '')
+        .toList();
+
+    final orgUsesKitchenRoles =
+        profileRoles.any((r) => _matchesRoleFilter(r, roleFilter));
+
+    final staffOnShift = orgUsesKitchenRoles
+        ? punches.where((row) {
+            final role =
+                (row['profiles'] as Map?)?['role'] as String? ?? '';
+            return _matchesRoleFilter(role, roleFilter);
+          }).length
+        : punches.length;
+
     final ordersLastHour = (results[2] as List).length;
     final maxCapacity = staffOnShift * settings.maxOrdersPerHour;
 
@@ -78,7 +140,7 @@ class CapacityEngine {
   }
 
   /// Auto-pause or auto-resume ordering based on staff count.
-  /// Returns the action taken (or null if no change needed).
+  /// Prefer the check-capacity edge cron in production — client call is optional.
   Future<String?> autoAdjust({
     required String organizationId,
     required String restaurantId,
@@ -97,7 +159,8 @@ class CapacityEngine {
 
     final isPaused = settingsRow['paused'] as bool? ?? false;
     final autoEnabled = settingsRow['auto_pause_enabled'] as bool? ?? true;
-    final threshold = (settingsRow['auto_pause_threshold'] as num?)?.toInt() ?? 1;
+    final threshold =
+        (settingsRow['auto_pause_threshold'] as num?)?.toInt() ?? 1;
 
     if (!autoEnabled) return null;
 
@@ -111,14 +174,13 @@ class CapacityEngine {
         restaurantId: restaurantId,
         event: 'auto_pause',
         status: status,
-        detail: 'Staff on shift (${status.staffOnShift}) below threshold ($threshold)',
+        detail:
+            'Staff on shift (${status.staffOnShift}) below threshold ($threshold)',
       );
       return 'auto_paused';
     }
 
     if (status.staffOnShift >= threshold && isPaused) {
-      // Only auto-resume if the pause was automatic, not manual.
-      // Check last capacity_event to see if it was auto_pause.
       final lastEvent = await _client
           .from('capacity_events')
           .select('event')
@@ -137,7 +199,8 @@ class CapacityEngine {
           restaurantId: restaurantId,
           event: 'auto_resume',
           status: status,
-          detail: 'Staff on shift (${status.staffOnShift}) meets threshold ($threshold)',
+          detail:
+              'Staff on shift (${status.staffOnShift}) meets threshold ($threshold)',
         );
         return 'auto_resumed';
       }
@@ -162,6 +225,36 @@ class CapacityEngine {
       'max_capacity': status.maxCapacity,
       'detail': detail,
     });
+  }
+
+  static bool _matchesRoleFilter(String role, List<String> filter) {
+    final r = role.trim().toLowerCase();
+    if (r.isEmpty) return false;
+    for (final f in filter) {
+      final needle = f.trim().toLowerCase();
+      if (needle.isEmpty) continue;
+      if (r == needle || r.contains(needle) || needle.contains(r)) {
+        return true;
+      }
+    }
+    return r.contains('cook') || r.contains('kitchen') || r.contains('chef');
+  }
+
+  static CapacityState _parseState(String? raw) {
+    switch (raw) {
+      case 'open':
+        return CapacityState.open;
+      case 'nearCapacity':
+        return CapacityState.nearCapacity;
+      case 'atCapacity':
+        return CapacityState.atCapacity;
+      case 'autoPaused':
+        return CapacityState.autoPaused;
+      case 'manuallyPaused':
+        return CapacityState.manuallyPaused;
+      default:
+        return CapacityState.unknown;
+    }
   }
 }
 
@@ -188,7 +281,9 @@ class CapacityStatus {
   final CapacityState state;
 
   bool get acceptingOrders =>
-      state == CapacityState.open || state == CapacityState.nearCapacity;
+      state == CapacityState.open ||
+      state == CapacityState.nearCapacity ||
+      state == CapacityState.atCapacity;
 
   bool get paused =>
       state == CapacityState.autoPaused ||

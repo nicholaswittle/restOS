@@ -29,3 +29,4 @@ ios/Flutter/Flutter.framework
 ios/Flutter/Flutter.podspec
 
 .vercel
+supabase/keys.txt

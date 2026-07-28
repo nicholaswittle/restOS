@@ -127,7 +127,14 @@ class _EmployeeDashboardState extends State<EmployeeDashboard> {
   }
 
   void _subscribeRealtime() {
-    for (final table in ['shifts', 'time_entries', 'messages', 'shift_notes']) {
+    for (final table in [
+      'shifts',
+      'time_entries',
+      'messages',
+      'shift_notes',
+      'server_tips',
+      'tip_allocations',
+    ]) {
       _subs.add(
         _client
             .from(table)
@@ -160,25 +167,20 @@ class _EmployeeDashboardState extends State<EmployeeDashboard> {
           .eq('organization_id', widget.organizationId)
           .single();
       final profile = _ProfileData.fromMap(profileRow);
-      final staffName = profile.name;
+      final staffName = profile.name.trim();
+      final staffKey = staffName.toLowerCase();
 
       final results = await Future.wait<dynamic>([
+        // Upcoming shifts for this venue — pick earliest by date then start time
+        // client-side (maybeSingle + date-only order missed earlier same-day shifts).
         _client
             .from('shifts')
             .select()
             .eq('organization_id', widget.organizationId)
-            .eq('shift_date', todayKey)
-            .eq('staff', staffName)
-            .maybeSingle(),
-        _client
-            .from('shifts')
-            .select()
-            .eq('organization_id', widget.organizationId)
-            .gt('shift_date', todayKey)
-            .eq('staff', staffName)
+            .gte('shift_date', todayKey)
             .order('shift_date')
-            .limit(1)
-            .maybeSingle(),
+            .order('start_time')
+            .limit(40),
         _client
             .from('time_entries')
             .select('id')
@@ -188,9 +190,8 @@ class _EmployeeDashboardState extends State<EmployeeDashboard> {
             .maybeSingle(),
         _client
             .from('shifts')
-            .select('start_time, end_time')
+            .select('staff, start_time, end_time')
             .eq('organization_id', widget.organizationId)
-            .eq('staff', staffName)
             .gte('shift_date', weekStartKey)
             .lte('shift_date', weekEndKey),
         _client
@@ -200,6 +201,13 @@ class _EmployeeDashboardState extends State<EmployeeDashboard> {
             .eq('user_id', _userId)
             .gte('tip_pools.shift_date', weekStartKey)
             .lte('tip_pools.shift_date', weekEndKey),
+        _client
+            .from('server_tips')
+            .select('cash_tips_cents, card_tips_cents, total_cents')
+            .eq('organization_id', widget.organizationId)
+            .eq('user_id', _userId)
+            .gte('shift_date', weekStartKey)
+            .lte('shift_date', weekEndKey),
         _client
             .from('shift_notes')
             .select('note, shift_date, created_at, profiles(name)')
@@ -217,30 +225,66 @@ class _EmployeeDashboardState extends State<EmployeeDashboard> {
 
       if (!mounted) return;
 
+      // Sort locally by date then start — PostgREST null start_times (Assign Days
+      // rows without hours) can win over earlier dated shifts if ordered by time.
+      final myUpcoming = (results[0] as List)
+          .cast<Map<String, dynamic>>()
+          .map(_ShiftData.fromMap)
+          .where((s) => s.staff.trim().toLowerCase() == staffKey)
+          .where((s) => !_shiftAlreadyEnded(s, now))
+          .toList()
+        ..sort((a, b) {
+          final byDate = a.shiftDate.compareTo(b.shiftDate);
+          if (byDate != 0) return byDate;
+          final aTime = a.startTime.isEmpty ? '99:99' : a.startTime;
+          final bTime = b.startTime.isEmpty ? '99:99' : b.startTime;
+          return aTime.compareTo(bTime);
+        });
+
+      _ShiftData? todayShift;
+      _ShiftData? nextShift;
+      if (myUpcoming.isNotEmpty) {
+        final first = myUpcoming.first;
+        if (first.shiftDate == todayKey) {
+          todayShift = first;
+          nextShift = myUpcoming.length > 1 ? myUpcoming[1] : null;
+        } else {
+          nextShift = first;
+        }
+      }
+
       double weekHours = 0;
-      for (final s in (results[3] as List).cast<Map<String, dynamic>>()) {
+      for (final s in (results[2] as List).cast<Map<String, dynamic>>()) {
+        final name = (s['staff'] as String?)?.trim().toLowerCase() ?? '';
+        if (name != staffKey) continue;
         weekHours += _hoursBetween(
             s['start_time'] as String?, s['end_time'] as String?);
       }
-      final tipsCents = (results[4] as List)
+      final poolTipsCents = (results[3] as List)
           .cast<Map<String, dynamic>>()
           .fold(0, (sum, r) => sum + (r['amount_cents'] as num? ?? 0).toInt());
+      final myTipsCents = (results[4] as List)
+          .cast<Map<String, dynamic>>()
+          .fold(0, (sum, r) {
+        final total = (r['total_cents'] as num?)?.toInt();
+        if (total != null) return sum + total;
+        final cash = (r['cash_tips_cents'] as num?)?.toInt() ?? 0;
+        final card = (r['card_tips_cents'] as num?)?.toInt() ?? 0;
+        return sum + cash + card;
+      });
 
       setState(() {
         _profile = profile;
-        _todayShift = results[0] == null
-            ? null
-            : _ShiftData.fromMap(results[0] as Map<String, dynamic>);
-        _nextShift = results[1] == null
-            ? null
-            : _ShiftData.fromMap(results[1] as Map<String, dynamic>);
-        _activeEntryId = (results[2] as Map<String, dynamic>?)?['id'] as String?;
+        _todayShift = todayShift;
+        _nextShift = nextShift;
+        _activeEntryId = (results[1] as Map<String, dynamic>?)?['id'] as String?;
         _pendingPunches = pending;
         _localOnClock = localOpen;
         _week = _WeekSummary(
           hours: weekHours,
           pay: weekHours * profile.hourlyRate,
-          tips: tipsCents / 100.0,
+          tips: poolTipsCents / 100.0,
+          myTips: myTipsCents / 100.0,
         );
         _latestNote = results[5] == null
             ? null
@@ -639,6 +683,39 @@ DateTime? _combineDateAndTime(String dateKey, String? timeRaw) {
       int.parse(m.group(1)!), int.parse(m.group(2)!));
 }
 
+/// True when the scheduled end is already past (overnight end rolls +1 day).
+bool _shiftAlreadyEnded(_ShiftData shift, DateTime now) {
+  final hasStart = shift.startTime.isNotEmpty;
+  final hasEnd = shift.endTime.isNotEmpty;
+
+  // Assign Days rows often have no times yet — treat as all-day until midnight.
+  if (!hasStart && !hasEnd) {
+    final d = DateTime.tryParse(shift.shiftDate);
+    if (d == null) return false;
+    final endOfDay = DateTime(d.year, d.month, d.day, 23, 59, 59);
+    return now.isAfter(endOfDay);
+  }
+
+  final start = hasStart
+      ? _combineDateAndTime(shift.shiftDate, shift.startTime)
+      : DateTime.tryParse(shift.shiftDate);
+  var end = hasEnd
+      ? _combineDateAndTime(shift.shiftDate, shift.endTime)
+      : (DateTime.tryParse(shift.shiftDate) != null
+          ? DateTime(
+              DateTime.parse(shift.shiftDate).year,
+              DateTime.parse(shift.shiftDate).month,
+              DateTime.parse(shift.shiftDate).day,
+              23,
+              59,
+              59,
+            )
+          : null);
+  if (start == null || end == null) return false;
+  if (!end.isAfter(start)) end = end.add(const Duration(days: 1));
+  return !end.isAfter(now);
+}
+
 double _hoursBetween(String? start, String? end) {
   final s = _combineDateAndTime('2000-01-01', start);
   var e = _combineDateAndTime('2000-01-01', end);
@@ -698,6 +775,7 @@ class _ShiftData {
   const _ShiftData({
     required this.id,
     required this.shiftDate,
+    required this.staff,
     required this.startTime,
     required this.endTime,
     required this.role,
@@ -706,29 +784,44 @@ class _ShiftData {
 
   final String id;
   final String shiftDate;
+  final String staff;
   final String startTime;
   final String endTime;
   final String role;
   final String zone;
 
-  String get timeRange => '${_formatTime(startTime)} – ${_formatTime(endTime)}';
+  String get timeRange {
+    if (startTime.isEmpty && endTime.isEmpty) return 'Hours TBD';
+    if (startTime.isEmpty) return 'Until ${_formatTime(endTime)}';
+    if (endTime.isEmpty) return 'From ${_formatTime(startTime)}';
+    return '${_formatTime(startTime)} – ${_formatTime(endTime)}';
+  }
 
   factory _ShiftData.fromMap(Map<String, dynamic> m) => _ShiftData(
         id: m['id'] as String? ?? '',
         shiftDate: m['shift_date'] as String? ?? '',
-        startTime: (m['start_time'] as String?) ?? '00:00',
-        endTime: (m['end_time'] as String?) ?? '00:00',
+        staff: m['staff'] as String? ?? '',
+        // Keep empty when unset — defaulting to 00:00 made null-time Assign Days
+        // rows look like midnight overnight shifts and scramble "next" ordering.
+        startTime: (m['start_time'] as String?)?.trim() ?? '',
+        endTime: (m['end_time'] as String?)?.trim() ?? '',
         role: (m['role'] as String?) ?? 'Staff',
         zone: (m['zone'] as String?) ?? '',
       );
 }
 
 class _WeekSummary {
-  const _WeekSummary({required this.hours, required this.pay, required this.tips});
+  const _WeekSummary({
+    required this.hours,
+    required this.pay,
+    required this.tips,
+    this.myTips = 0,
+  });
 
   final double hours;
   final double pay;
   final double tips;
+  final double myTips;
 }
 
 class _ShiftNoteData {
@@ -1008,18 +1101,35 @@ class _WeekSummaryCard extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     return Card(
       child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 18),
-        child: Row(children: [
-          _WeekMetric(
-            label: 'Hours',
-            value: summary.hours.toStringAsFixed(
-                summary.hours == summary.hours.roundToDouble() ? 0 : 1),
-          ),
-          _VertDivider(color: cs.outlineVariant),
-          _WeekMetric(label: 'Est. pay', value: '\$${summary.pay.toStringAsFixed(0)}'),
-          _VertDivider(color: cs.outlineVariant),
-          _WeekMetric(label: 'Tips', value: '\$${summary.tips.toStringAsFixed(0)}'),
-        ]),
+        padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 4),
+        child: Column(
+          children: [
+            Row(children: [
+              _WeekMetric(
+                label: 'Hours',
+                value: summary.hours.toStringAsFixed(
+                    summary.hours == summary.hours.roundToDouble() ? 0 : 1),
+              ),
+              _VertDivider(color: cs.outlineVariant),
+              _WeekMetric(
+                  label: 'Est. pay',
+                  value: '\$${summary.pay.toStringAsFixed(0)}'),
+              _VertDivider(color: cs.outlineVariant),
+              _WeekMetric(
+                  label: 'My tips',
+                  value: '\$${summary.myTips.toStringAsFixed(0)}'),
+            ]),
+            if (summary.tips > 0) ...[
+              const SizedBox(height: 10),
+              Text(
+                'Pool split this week: \$${summary.tips.toStringAsFixed(0)}',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: cs.onSurface.withValues(alpha: 0.45),
+                    ),
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }

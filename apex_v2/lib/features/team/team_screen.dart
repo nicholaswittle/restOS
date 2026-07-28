@@ -9,7 +9,7 @@ import '../../core/demo_backend.dart';
 import '../../core/entitlements.dart';
 import '../../core/shift_time.dart';
 
-/// Manager roster + invite codes — query shapes from Apex v1 OrgInvitePanel.
+/// Manager roster + invite codes + owner role promotion.
 class TeamScreen extends StatefulWidget {
   const TeamScreen({
     super.key,
@@ -38,6 +38,11 @@ class _TeamScreenState extends State<TeamScreen> {
   final _subs = <StreamSubscription<dynamic>>[];
 
   bool get _canManage => widget.role?.canManage ?? false;
+  bool get _isOwner => widget.role == StaffRole.owner;
+
+  String get _selfId => DemoMode.enabled
+      ? DemoMode.userId
+      : (_client.auth.currentUser?.id ?? '');
 
   @override
   void initState() {
@@ -125,10 +130,7 @@ class _TeamScreenState extends State<TeamScreen> {
       if (DemoMode.enabled) {
         code = _demoInviteCode();
       } else {
-        final raw = await _client.rpc(
-          'apex_create_invite',
-          params: {'invite_role': 'Staff'},
-        );
+        final raw = await _client.rpc('apex_generate_invite');
         code = (raw as String?)?.trim() ?? '';
       }
       if (!mounted) return;
@@ -161,6 +163,88 @@ class _TeamScreenState extends State<TeamScreen> {
   void _copy(String code) {
     Clipboard.setData(ClipboardData(text: code));
     _snack('Copied $code');
+  }
+
+  Future<void> _openRoleSheet(_Member member) async {
+    if (!_isOwner) return;
+    if (member.id == _selfId) {
+      _snack('You cannot change your own role here.');
+      return;
+    }
+
+    const roles = ['Staff', 'Server', 'Kitchen', 'Manager', 'Owner'];
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) {
+        final cs = Theme.of(ctx).colorScheme;
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text('Set role for ${member.name}',
+                    style: Theme.of(ctx).textTheme.titleLarge),
+                const SizedBox(height: 8),
+                Text(
+                  'Only owners can change roles.',
+                  style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
+                        color: cs.onSurface.withValues(alpha: 0.55),
+                      ),
+                ),
+                const SizedBox(height: 12),
+                for (final r in roles)
+                  ListTile(
+                    title: Text(r),
+                    trailing: member.role.toLowerCase() == r.toLowerCase()
+                        ? Icon(Icons.check_rounded, color: cs.primary)
+                        : null,
+                    onTap: () => Navigator.pop(ctx, r),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    if (picked == null || !mounted) return;
+    if (picked.toLowerCase() == member.role.toLowerCase()) return;
+
+    setState(() => _busy = true);
+    try {
+      if (DemoMode.enabled) {
+        for (final row in DemoSeed.staff) {
+          if (row['id'] == member.id) {
+            row['role'] = picked;
+            break;
+          }
+        }
+      } else {
+        await _client.rpc(
+          'apex_set_role',
+          params: {
+            'target_user_id': member.id,
+            'new_role': picked,
+          },
+        );
+      }
+      if (!mounted) return;
+      _snack('${member.name} is now $picked.');
+      await _load(quiet: true);
+    } catch (e) {
+      if (!mounted) return;
+      final msg = e.toString().toLowerCase();
+      if (msg.contains('cannot_demote_last_owner')) {
+        _snack('Keep at least one Owner on the team.');
+      } else {
+        _snack('Could not update role.');
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   @override
@@ -210,7 +294,7 @@ class _TeamScreenState extends State<TeamScreen> {
                               style: Theme.of(context).textTheme.displaySmall),
                           Text(
                             _canManage
-                                ? 'Roster · invite codes expire in 14 days'
+                                ? 'Roster · invite codes expire in 7 days'
                                 : 'Your crew',
                             style: Theme.of(context)
                                 .textTheme
@@ -246,7 +330,12 @@ class _TeamScreenState extends State<TeamScreen> {
                   )
                 else
                   for (var i = 0; i < _members.length; i++) ...[
-                    _MemberTile(member: _members[i]),
+                    _MemberTile(
+                      member: _members[i],
+                      onTap: _isOwner && _members[i].id != _selfId
+                          ? () => _openRoleSheet(_members[i])
+                          : null,
+                    ),
                     if (i != _members.length - 1) const SizedBox(height: 10),
                   ],
                 if (_canManage) ...[
@@ -322,9 +411,10 @@ class _Invite {
 }
 
 class _MemberTile extends StatelessWidget {
-  const _MemberTile({required this.member});
+  const _MemberTile({required this.member, this.onTap});
 
   final _Member member;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -334,6 +424,7 @@ class _MemberTile extends StatelessWidget {
         : '';
     return Card(
       child: ListTile(
+        onTap: onTap,
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
         leading: CircleAvatar(
           backgroundColor: cs.primary.withValues(alpha: 0.2),
@@ -344,6 +435,48 @@ class _MemberTile extends StatelessWidget {
         ),
         title: Text(member.name),
         subtitle: Text('${member.role}$rate'),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _RoleBadge(role: member.role),
+            if (onTap != null) ...[
+              const SizedBox(width: 4),
+              Icon(Icons.edit_outlined,
+                  size: 18, color: cs.onSurface.withValues(alpha: 0.45)),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RoleBadge extends StatelessWidget {
+  const _RoleBadge({required this.role});
+
+  final String role;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final color = switch (role.toLowerCase()) {
+      'owner' => cs.tertiary,
+      'manager' => cs.primary,
+      'kitchen' => cs.secondary,
+      _ => cs.onSurface.withValues(alpha: 0.55),
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.18),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        role,
+        style: Theme.of(context).textTheme.labelMedium?.copyWith(
+              color: color,
+              fontWeight: FontWeight.w600,
+            ),
       ),
     );
   }
@@ -404,7 +537,7 @@ class _InviteBanner extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('New invite',
+                Text('Share this code with your staff',
                     style: Theme.of(context).textTheme.titleMedium),
                 const SizedBox(height: 4),
                 Text(code,

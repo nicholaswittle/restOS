@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'core/demo_backend.dart';
 import 'core/entitlements.dart';
+import 'features/admin/admin_console_screen.dart';
 import 'features/auth/auth_gate.dart';
 import 'features/auth/sign_in_screen.dart';
 import 'features/callout/call_out_screen.dart';
@@ -20,7 +21,7 @@ import 'features/swaps/swaps_screen.dart';
 import 'features/team/team_screen.dart';
 import 'features/time_clock/qr_wall_screen.dart';
 import 'features/time_off/time_off_screen.dart';
-import 'features/tips/tip_management.dart';
+import 'features/tips/server_tip_log.dart';
 
 /// The Apex shell.
 ///
@@ -149,10 +150,10 @@ const _moduleRoutes = <OsFeature>[
   ),
   OsFeature(
     module: OsModule.tipManagement,
-    route: '/tips',
-    label: 'Tips',
-    icon: Icons.payments_rounded,
-    builder: _buildTips,
+    route: '/my-tips',
+    label: 'My Tips',
+    icon: Icons.edit_note_rounded,
+    builder: _buildMyTips,
   ),
   OsFeature(
     module: OsModule.teamChat,
@@ -226,8 +227,8 @@ Widget _buildSwaps(BuildContext context, String orgId, StaffRole role) =>
 Widget _buildLogBook(BuildContext context, String orgId, StaffRole role) =>
     ManagerLogBook(organizationId: orgId);
 
-Widget _buildTips(BuildContext context, String orgId, StaffRole role) =>
-    TipManagement(organizationId: orgId);
+Widget _buildMyTips(BuildContext context, String orgId, StaffRole role) =>
+    ServerTipLog(organizationId: orgId, canManage: role.canManage);
 
 Widget _buildChat(BuildContext context, String orgId, StaffRole role) =>
     TeamChatScreen(organizationId: orgId);
@@ -267,6 +268,7 @@ class _ApexShellState extends State<ApexShell> {
   String _orgId = '';
   StaffRole _role = StaffRole.server;
   Entitlements _entitlements = Entitlements.none;
+  bool _isSuperAdmin = false;
 
   @override
   void initState() {
@@ -284,10 +286,16 @@ class _ApexShellState extends State<ApexShell> {
             .from('organizations')
             .select('tier, enabled_modules, disabled_modules')
             .maybeSingle();
+        final profile = await _client
+            .from('profiles')
+            .select('role, is_super_admin')
+            .eq('id', DemoMode.userId)
+            .maybeSingle();
         if (!mounted) return;
         setState(() {
           _orgId = DemoMode.organizationId;
-          _role = StaffRole.manager;
+          _role = StaffRole.parse(profile?['role'] as String? ?? 'owner');
+          _isSuperAdmin = profile?['is_super_admin'] == true;
           _entitlements = Entitlements.fromMap(org);
           _loading = false;
           _error = null;
@@ -307,7 +315,7 @@ class _ApexShellState extends State<ApexShell> {
 
       final profile = await _client
           .from('profiles')
-          .select('role, organization_id')
+          .select('role, organization_id, is_super_admin')
           .eq('id', userId)
           .maybeSingle();
 
@@ -331,6 +339,7 @@ class _ApexShellState extends State<ApexShell> {
       setState(() {
         _orgId = orgId;
         _role = StaffRole.parse(profile?['role'] as String?);
+        _isSuperAdmin = profile?['is_super_admin'] == true;
         _entitlements = Entitlements.fromMap(org);
         _loading = false;
         _error = null;
@@ -398,9 +407,10 @@ class _ApexShellState extends State<ApexShell> {
     }
 
     final extras = _available;
+    final navCount = extras.length + (_isSuperAdmin ? 1 : 0);
     // Four labels ("Labor Cost" especially) do not fit Expanded on a 375px
     // phone — switch to a horizontal scroll once we exceed three modules.
-    final scrollModules = extras.length > 3;
+    final scrollModules = navCount > 3;
 
     return Scaffold(
       body: EmployeeDashboard(
@@ -417,7 +427,8 @@ class _ApexShellState extends State<ApexShell> {
         onSignOut: DemoMode.enabled ? null : _signOut,
       ),
       // Free tier still shows Schedule (scheduling is free). Pro+ adds more.
-      bottomNavigationBar: extras.isEmpty
+      // Admin is above tiers — gated by profiles.is_super_admin only.
+      bottomNavigationBar: navCount == 0
           ? null
           : SafeArea(
               child: Padding(
@@ -436,8 +447,19 @@ class _ApexShellState extends State<ApexShell> {
                                   onTap: () => _open(f),
                                 ),
                               ),
-                              if (f != extras.last) const SizedBox(width: 10),
+                              const SizedBox(width: 10),
                             ],
+                            if (_isSuperAdmin)
+                              SizedBox(
+                                width: 96,
+                                child: _ModuleButton(
+                                  icon: Icons.admin_panel_settings_rounded,
+                                  label: 'Admin',
+                                  onTap: () => _openRoute(
+                                    const AdminConsoleScreen(),
+                                  ),
+                                ),
+                              ),
                           ],
                         ),
                       )
@@ -451,8 +473,19 @@ class _ApexShellState extends State<ApexShell> {
                                 onTap: () => _open(f),
                               ),
                             ),
-                            if (f != extras.last) const SizedBox(width: 10),
+                            if (f != extras.last || _isSuperAdmin)
+                              const SizedBox(width: 10),
                           ],
+                          if (_isSuperAdmin)
+                            Expanded(
+                              child: _ModuleButton(
+                                icon: Icons.admin_panel_settings_rounded,
+                                label: 'Admin',
+                                onTap: () => _openRoute(
+                                  const AdminConsoleScreen(),
+                                ),
+                              ),
+                            ),
                         ],
                       ),
               ),

@@ -34,32 +34,41 @@ class DemoSeed {
     {
       'id': DemoMode.userId,
       'name': 'Alex Rivera',
-      'role': 'manager',
+      'role': 'Owner',
       'hourly_rate': 21.0,
       'organization_id': DemoMode.organizationId,
       'phone': '+15555550101',
       'push_token': null,
+      // Demo walkthrough opens the fleet console without a live session.
+      'is_super_admin': true,
+      'email': 'alex@alder.demo',
     },
     {
       'id': 'demo-user-0002',
       'name': 'Sam Chen',
-      'role': 'server',
+      'role': 'Server',
       'hourly_rate': 16.5,
       'organization_id': DemoMode.organizationId,
+      'is_super_admin': false,
+      'email': 'sam@alder.demo',
     },
     {
       'id': 'demo-user-0003',
       'name': 'Jordan Blake',
-      'role': 'kitchen',
+      'role': 'Kitchen',
       'hourly_rate': 19.0,
       'organization_id': DemoMode.organizationId,
+      'is_super_admin': false,
+      'email': 'jordan@alder.demo',
     },
     {
       'id': 'demo-user-0004',
       'name': 'Priya Nair',
-      'role': 'server',
+      'role': 'Server',
       'hourly_rate': 16.5,
       'organization_id': DemoMode.organizationId,
+      'is_super_admin': false,
+      'email': 'priya@alder.demo',
     },
   ];
 
@@ -575,6 +584,65 @@ class DemoSeed {
       'fee_cents': 0,
       'tax_rate': 0.06,
       'payment_mode': 'manual',
+      'max_orders_per_hour': 15,
+      'auto_pause_enabled': true,
+      'auto_pause_threshold': 1,
+    },
+  ];
+
+  static final capacityEvents = <Map<String, dynamic>>[
+    {
+      'id': 'demo-cap-0001',
+      'organization_id': DemoMode.organizationId,
+      'restaurant_id': restaurantId,
+      'event': 'auto_resume',
+      'staff_on_shift': 2,
+      'orders_last_hour': 8,
+      'max_capacity': 30,
+      'detail': 'Staff on shift (2) meets threshold (1)',
+      'created_at': DateTime.now().subtract(const Duration(hours: 2)).toUtc().toIso8601String(),
+    },
+  ];
+
+  static final serverTips = <Map<String, dynamic>>[
+    {
+      'id': 'demo-st-0001',
+      'organization_id': DemoMode.organizationId,
+      'user_id': DemoMode.userId,
+      'staff_name': 'Demo Server',
+      'shift_date': DateFormat('yyyy-MM-dd').format(DateTime.now().subtract(const Duration(days: 1))),
+      'cash_tips_cents': 4500,
+      'card_tips_cents': 8200,
+      'total_cents': 12700,
+      'note': 'Busy Friday',
+      'created_at': DateTime.now().subtract(const Duration(days: 1)).toUtc().toIso8601String(),
+      'updated_at': DateTime.now().subtract(const Duration(days: 1)).toUtc().toIso8601String(),
+    },
+    {
+      'id': 'demo-st-0002',
+      'organization_id': DemoMode.organizationId,
+      'user_id': DemoMode.userId,
+      'staff_name': 'Demo Server',
+      'shift_date': DateFormat('yyyy-MM-dd').format(DateTime.now().subtract(const Duration(days: 2))),
+      'cash_tips_cents': 3000,
+      'card_tips_cents': 5500,
+      'total_cents': 8500,
+      'note': null,
+      'created_at': DateTime.now().subtract(const Duration(days: 2)).toUtc().toIso8601String(),
+      'updated_at': DateTime.now().subtract(const Duration(days: 2)).toUtc().toIso8601String(),
+    },
+  ];
+
+  static final dailyRevenue = <Map<String, dynamic>>[
+    {
+      'id': 'demo-dr-0001',
+      'organization_id': DemoMode.organizationId,
+      'restaurant_id': restaurantId,
+      'revenue_date': DateFormat('yyyy-MM-dd').format(DateTime.now().subtract(const Duration(days: 1))),
+      'total_cents': 240000,
+      'source': 'manual',
+      'note': 'POS closeout',
+      'created_at': DateTime.now().subtract(const Duration(days: 1)).toUtc().toIso8601String(),
     },
   ];
 
@@ -1071,6 +1139,12 @@ class DemoSeed {
         return callOuts;
       case 'call_out_notifications':
         return callOutNotifications;
+      case 'capacity_events':
+        return capacityEvents;
+      case 'daily_revenue':
+        return dailyRevenue;
+      case 'server_tips':
+        return serverTips;
       default:
         return const [];
     }

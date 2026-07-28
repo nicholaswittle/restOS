@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../core/demo_backend.dart';
 import '../../core/shift_time.dart';
 
 /// The OS feature: real labor cost vs real order revenue from the same Supabase.
@@ -35,7 +36,9 @@ class _LaborVsRevenueDashboardState extends State<LaborVsRevenueDashboard> {
   _Summary _summary = const _Summary();
   List<_StaffRow> _staff = const [];
   List<_OrderRow> _orders = const [];
+  List<_DailyRevenueRow> _dailyRevenue = const [];
   List<String> _openPunchNames = const [];
+  bool _savingRevenue = false;
 
   final _subs = <StreamSubscription<dynamic>>[];
 
@@ -45,6 +48,8 @@ class _LaborVsRevenueDashboardState extends State<LaborVsRevenueDashboard> {
     final role = _viewer?.role.toLowerCase() ?? '';
     return role == 'owner' || role == 'manager';
   }
+
+  bool get _canEnterSales => _canView;
 
   @override
   void initState() {
@@ -61,7 +66,13 @@ class _LaborVsRevenueDashboardState extends State<LaborVsRevenueDashboard> {
   }
 
   void _subscribeRealtime() {
-    for (final table in ['profiles', 'shifts', 'time_entries', 'online_orders']) {
+    for (final table in [
+      'profiles',
+      'shifts',
+      'time_entries',
+      'online_orders',
+      'daily_revenue',
+    ]) {
       _subs.add(
         _client
             .from(table)
@@ -137,6 +148,13 @@ class _LaborVsRevenueDashboardState extends State<LaborVsRevenueDashboard> {
             .gte('submitted_at', startBound.startUtc)
             .lt('submitted_at', endBound.endUtc)
             .order('submitted_at', ascending: false),
+        _client
+            .from('daily_revenue')
+            .select('id, revenue_date, total_cents, source, note')
+            .eq('organization_id', widget.organizationId)
+            .gte('revenue_date', startKey)
+            .lte('revenue_date', endKey)
+            .order('revenue_date', ascending: false),
       ]);
 
       if (!mounted) return;
@@ -226,9 +244,37 @@ class _LaborVsRevenueDashboardState extends State<LaborVsRevenueDashboard> {
           .cast<Map<String, dynamic>>()
           .map(_OrderRow.fromMap)
           .toList();
-      final revenueCents = orderRows
-          .where((o) => o.status != 'rejected')
-          .fold(0, (sum, o) => sum + o.totalCents);
+      final dailyRows = (results[5] as List)
+          .cast<Map<String, dynamic>>()
+          .map(_DailyRevenueRow.fromMap)
+          .toList();
+
+      // Manual daily entry supersedes online-order totals for that calendar day.
+      final ordersByDay = <String, int>{};
+      for (final o in orderRows) {
+        // FIN-01 fix: only count completed/accepted orders as revenue, not waiting/cancelled
+        if (o.status != 'completed' && o.status != 'accepted') continue;
+        final key = dateKeyOf(o.submittedAt.toLocal());
+        ordersByDay[key] = (ordersByDay[key] ?? 0) + o.totalCents;
+      }
+      final manualByDay = <String, int>{
+        for (final d in dailyRows) d.revenueDate: d.totalCents,
+      };
+      final dayKeys = {...ordersByDay.keys, ...manualByDay.keys};
+      var revenueCents = 0;
+      var manualCents = 0;
+      var orderOnlyCents = 0;
+      for (final key in dayKeys) {
+        final manual = manualByDay[key];
+        if (manual != null) {
+          revenueCents += manual;
+          manualCents += manual;
+        } else {
+          final online = ordersByDay[key] ?? 0;
+          revenueCents += online;
+          orderOnlyCents += online;
+        }
+      }
 
       setState(() {
         _viewer = viewer;
@@ -238,10 +284,13 @@ class _LaborVsRevenueDashboardState extends State<LaborVsRevenueDashboard> {
           scheduledCost: schedCost,
           actualCost: actCost,
           revenueCents: revenueCents,
-          orderCount: orderRows.length,
+          orderCount: orderRows.where((o) => o.status == 'completed' || o.status == 'accepted').length,
+          manualRevenueCents: manualCents,
+          orderRevenueCents: orderOnlyCents,
         );
         _staff = rows;
         _orders = orderRows;
+        _dailyRevenue = dailyRows;
         _openPunchNames = openNames.toList()..sort();
         _loading = false;
         _reloading = false;
@@ -267,6 +316,105 @@ class _LaborVsRevenueDashboardState extends State<LaborVsRevenueDashboard> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(msg), behavior: SnackBarBehavior.floating),
     );
+  }
+
+  Future<void> _enterTodaysSales() async {
+    if (!_canEnterSales || _savingRevenue) return;
+    final dollarsCtrl = TextEditingController();
+    final noteCtrl = TextEditingController();
+    final today = DateTime.now();
+    final todayKey = dateKeyOf(DateTime(today.year, today.month, today.day));
+    _DailyRevenueRow? existing;
+    for (final d in _dailyRevenue) {
+      if (d.revenueDate == todayKey) {
+        existing = d;
+        break;
+      }
+    }
+    if (existing != null) {
+      dollarsCtrl.text = (existing.totalCents / 100).toStringAsFixed(2);
+      noteCtrl.text = existing.note ?? '';
+    }
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Enter today's sales"),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: dollarsCtrl,
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                labelText: 'Total sales (\$)',
+                border: OutlineInputBorder(),
+                prefixText: '\$ ',
+              ),
+              autofocus: true,
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: noteCtrl,
+              maxLines: 2,
+              decoration: const InputDecoration(
+                labelText: 'Note (optional)',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    if (saved != true || !mounted) {
+      dollarsCtrl.dispose();
+      noteCtrl.dispose();
+      return;
+    }
+
+    final dollars = double.tryParse(dollarsCtrl.text.trim().replaceAll(',', ''));
+    dollarsCtrl.dispose();
+    final note = noteCtrl.text.trim();
+    noteCtrl.dispose();
+    if (dollars == null || dollars < 0) {
+      _snack('Enter a valid sales amount.');
+      return;
+    }
+
+    setState(() => _savingRevenue = true);
+    try {
+      await _client.from('daily_revenue').upsert(
+        {
+          'organization_id': widget.organizationId,
+          'revenue_date': todayKey,
+          'total_cents': (dollars * 100).round(),
+          'source': 'manual',
+          'note': note.isEmpty ? null : note,
+          'created_by': DemoMode.enabled ? DemoMode.userId : _userId,
+        },
+        onConflict: 'organization_id,revenue_date',
+      );
+      if (!mounted) return;
+      _snack('Saved sales for $todayKey');
+      await _load(quiet: true);
+    } catch (e) {
+      if (!mounted) return;
+      _snack('Could not save sales. Try again.');
+    } finally {
+      if (mounted) setState(() => _savingRevenue = false);
+    }
   }
 
   double? get _laborPercent {
@@ -465,6 +613,9 @@ class _LaborVsRevenueDashboardState extends State<LaborVsRevenueDashboard> {
                   laborCost: _summary.actualCost,
                   hours: _summary.actualHours,
                   orderCount: _summary.orderCount,
+                  revenueSourceLabel: _summary.revenueSourceLabel,
+                  onEnterSales: _canEnterSales ? _enterTodaysSales : null,
+                  savingSales: _savingRevenue,
                 ),
                 const SizedBox(height: 12),
                 if (_openPunchNames.isNotEmpty) ...[
@@ -564,6 +715,27 @@ class _OrderRow {
       );
 }
 
+class _DailyRevenueRow {
+  const _DailyRevenueRow({
+    required this.revenueDate,
+    required this.totalCents,
+    required this.source,
+    this.note,
+  });
+
+  final String revenueDate;
+  final int totalCents;
+  final String source;
+  final String? note;
+
+  factory _DailyRevenueRow.fromMap(Map<String, dynamic> m) => _DailyRevenueRow(
+        revenueDate: m['revenue_date'] as String? ?? '',
+        totalCents: (m['total_cents'] as num?)?.toInt() ?? 0,
+        source: m['source'] as String? ?? 'manual',
+        note: m['note'] as String?,
+      );
+}
+
 class _Summary {
   const _Summary({
     this.scheduledHours = 0,
@@ -572,6 +744,8 @@ class _Summary {
     this.actualCost = 0,
     this.revenueCents = 0,
     this.orderCount = 0,
+    this.manualRevenueCents = 0,
+    this.orderRevenueCents = 0,
   });
 
   final double scheduledHours;
@@ -580,8 +754,19 @@ class _Summary {
   final double actualCost;
   final int revenueCents;
   final int orderCount;
+  final int manualRevenueCents;
+  final int orderRevenueCents;
 
   double get revenueDollars => revenueCents / 100.0;
+
+  String get revenueSourceLabel {
+    final rev = '\$${revenueDollars.toStringAsFixed(0)}';
+    if (manualRevenueCents > 0) {
+      final manual = '\$${(manualRevenueCents / 100).toStringAsFixed(0)}';
+      return 'Revenue: $rev ($orderCount orders + $manual manual entry)';
+    }
+    return 'Revenue: $rev ($orderCount orders only)';
+  }
 }
 
 // ─── UI pieces ───────────────────────────────────────────────────────────────
@@ -672,6 +857,9 @@ class _HeadlineCard extends StatelessWidget {
     required this.laborCost,
     required this.hours,
     required this.orderCount,
+    required this.revenueSourceLabel,
+    this.onEnterSales,
+    this.savingSales = false,
   });
 
   final double? percent;
@@ -679,6 +867,9 @@ class _HeadlineCard extends StatelessWidget {
   final double laborCost;
   final double hours;
   final int orderCount;
+  final String revenueSourceLabel;
+  final VoidCallback? onEnterSales;
+  final bool savingSales;
 
   Color _pctColor(ColorScheme cs) {
     if (percent == null) return cs.onSurface.withValues(alpha: 0.4);
@@ -746,6 +937,13 @@ class _HeadlineCard extends StatelessWidget {
                 ),
               ],
             ),
+            const SizedBox(height: 8),
+            Text(
+              revenueSourceLabel,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: cs.onSurface.withValues(alpha: 0.55),
+                  ),
+            ),
             const SizedBox(height: 20),
             Row(children: [
               _Metric(
@@ -768,6 +966,27 @@ class _HeadlineCard extends StatelessWidget {
                     : '—',
               ),
             ]),
+            if (onEnterSales != null) ...[
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: savingSales ? null : onEnterSales,
+                  icon: savingSales
+                      ? SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: cs.primary.withValues(alpha: 0.7),
+                          ),
+                        )
+                      : const Icon(Icons.point_of_sale_rounded),
+                  label: Text(
+                      savingSales ? 'Saving…' : "Enter today's sales"),
+                ),
+              ),
+            ],
           ],
         ),
       ),

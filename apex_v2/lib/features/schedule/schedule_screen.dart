@@ -441,25 +441,72 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
     final isThisWeek = _weekStart == _mondayOf(DateTime.now());
 
     return Scaffold(
-      floatingActionButton: _canManage
-          ? Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                FloatingActionButton.extended(
-                  heroTag: 'import',
-                  onPressed: _busy ? null : _openPhotoImport,
-                  icon: const Icon(Icons.photo_camera_rounded),
-                  label: const Text('Import photo'),
+      bottomNavigationBar: _canManage
+          ? Material(
+              elevation: 8,
+              color: cs.surfaceContainer,
+              child: SafeArea(
+                top: false,
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: TextButton(
+                          onPressed: _busy ? null : _openPhotoImport,
+                          style: TextButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                          ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.photo_camera_rounded,
+                                  color: cs.primary),
+                              const SizedBox(height: 2),
+                              Text(
+                                'Import',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .labelMedium
+                                    ?.copyWith(color: cs.onSurface),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      Container(
+                        width: 1,
+                        height: 36,
+                        color: cs.outlineVariant.withValues(alpha: 0.5),
+                      ),
+                      Expanded(
+                        child: TextButton(
+                          onPressed: _busy ? null : _openAssignDays,
+                          style: TextButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                          ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.calendar_month_rounded,
+                                  color: cs.primary),
+                              const SizedBox(height: 2),
+                              Text(
+                                'Assign days',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .labelMedium
+                                    ?.copyWith(color: cs.onSurface),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-                const SizedBox(height: 12),
-                FloatingActionButton.extended(
-                  heroTag: 'assign',
-                  onPressed: _busy ? null : _openAssignDays,
-                  icon: const Icon(Icons.calendar_month_rounded),
-                  label: const Text('Assign days'),
-                ),
-              ],
+              ),
             )
           : null,
       body: RefreshIndicator(
@@ -560,7 +607,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
               ),
             ),
             SliverPadding(
-              padding: const EdgeInsets.fromLTRB(20, 4, 20, 100),
+              padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
               sliver: SliverList.list(children: [
                 for (var i = 0; i < 7; i++) ...[
                   _DaySection(

@@ -14,12 +14,14 @@ class TipManagement extends StatefulWidget {
     super.key,
     required this.organizationId,
     this.canManage,
+    this.onBack,
   });
 
   final String organizationId;
 
   /// When null, derived from the signed-in profile role.
   final bool? canManage;
+  final VoidCallback? onBack;
 
   @override
   State<TipManagement> createState() => _TipManagementState();
@@ -360,14 +362,29 @@ class _TipManagementState extends State<TipManagement> {
               child: SafeArea(
                 bottom: false,
                 child: Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 24, 20, 8),
+                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        'Tips',
-                        style: Theme.of(context).textTheme.displaySmall,
-                      ),
+                      Row(children: [
+                        if (widget.onBack != null)
+                          IconButton(
+                            onPressed: widget.onBack,
+                            icon: const Icon(Icons.arrow_back_rounded),
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                              minWidth: 40,
+                              minHeight: 40,
+                            ),
+                          ),
+                        if (widget.onBack != null) const SizedBox(width: 4),
+                        Expanded(
+                          child: Text(
+                            'Tips',
+                            style: Theme.of(context).textTheme.displaySmall,
+                          ),
+                        ),
+                      ]),
                       const SizedBox(height: 8),
                       Text(
                         _canManage

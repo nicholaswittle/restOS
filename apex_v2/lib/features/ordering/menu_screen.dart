@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../core/capacity_engine.dart';
 import 'cart_screen.dart';
 import 'ordering_models.dart';
 
@@ -33,7 +34,9 @@ class _MenuScreenState extends State<MenuScreen> {
   String _restaurantId = '';
   String _organizationId = '';
   String _restaurantName = '';
+  String _restaurantPublicToken = '';
   RestaurantSettingsData? _settings;
+  CapacityStatus? _capacity;
   List<_MenuCategory> _categories = const [];
   List<_MenuItem> _items = const [];
   final Map<String, List<_ModifierGroup>> _groupsByItem = {};
@@ -71,8 +74,44 @@ class _MenuScreenState extends State<MenuScreen> {
           .from('restaurant_settings')
           .stream(primaryKey: ['restaurant_id'])
           .eq('organization_id', _organizationId)
-          .listen((_) => _load(quiet: true)),
+          .listen((_) {
+        _load(quiet: true);
+        _refreshCapacity();
+      }),
     );
+    // Best-effort: anon may not receive these events under RLS.
+    try {
+      _subs.add(
+        _client
+            .from('time_entries')
+            .stream(primaryKey: ['id'])
+            .eq('organization_id', _organizationId)
+            .listen((_) => _refreshCapacity()),
+      );
+    } catch (_) {}
+    try {
+      _subs.add(
+        _client
+            .from('online_orders')
+            .stream(primaryKey: ['id'])
+            .eq('organization_id', _organizationId)
+            .listen((_) => _refreshCapacity()),
+      );
+    } catch (_) {}
+  }
+
+  Future<void> _refreshCapacity() async {
+    if (_restaurantId.isEmpty || _organizationId.isEmpty) return;
+    try {
+      final status = await CapacityEngine(_client).check(
+        organizationId: _organizationId,
+        restaurantId: _restaurantId,
+      );
+      if (!mounted) return;
+      setState(() => _capacity = status);
+    } catch (_) {
+      // Capacity is advisory — never block the menu.
+    }
   }
 
   Future<void> _load({bool quiet = false}) async {
@@ -156,7 +195,8 @@ class _MenuScreenState extends State<MenuScreen> {
       for (final g in groupRows) {
         final itemId = g['menu_item_id'] as String?;
         if (itemId == null) continue;
-        final group = _ModifierGroup.fromMap(g, optionsByGroup[g['id']] ?? const []);
+        final group =
+            _ModifierGroup.fromMap(g, optionsByGroup[g['id']] ?? const []);
         groupsByItem.putIfAbsent(itemId, () => []).add(group);
       }
 
@@ -165,6 +205,8 @@ class _MenuScreenState extends State<MenuScreen> {
         _restaurantId = restId;
         _organizationId = orgId;
         _restaurantName = restaurant!['name'] as String? ?? 'Menu';
+        _restaurantPublicToken =
+            restaurant['public_token'] as String? ?? widget.publicToken ?? '';
         _settings = settingsRow == null
             ? null
             : RestaurantSettingsData.fromMap(settingsRow);
@@ -176,6 +218,8 @@ class _MenuScreenState extends State<MenuScreen> {
         _loading = false;
         _error = null;
       });
+
+      unawaited(_refreshCapacity());
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -252,6 +296,7 @@ class _MenuScreenState extends State<MenuScreen> {
           restaurantId: _restaurantId,
           organizationId: _organizationId,
           restaurantName: _restaurantName,
+          restaurantPublicToken: _restaurantPublicToken,
           settings: settings,
           cart: List<CartEntry>.from(_cart.map((e) => CartEntry(
                 menuItemId: e.menuItemId,
@@ -271,6 +316,28 @@ class _MenuScreenState extends State<MenuScreen> {
           ..addAll(updated);
       });
     }
+  }
+
+  Widget? _capacityBanner(ColorScheme cs) {
+    final state = _capacity?.state;
+    if (state == CapacityState.nearCapacity) {
+      return _CapacityBanner(
+        message: 'High demand — expect a slightly longer wait.',
+        background: const Color(0xFFFBBF24).withValues(alpha: 0.15),
+        border: const Color(0xFFFBBF24).withValues(alpha: 0.4),
+        iconColor: const Color(0xFFFBBF24),
+      );
+    }
+    if (state == CapacityState.atCapacity) {
+      return _CapacityBanner(
+        message:
+            'Kitchen is at capacity — new orders will have a longer wait.',
+        background: const Color(0xFFFB923C).withValues(alpha: 0.15),
+        border: const Color(0xFFFB923C).withValues(alpha: 0.45),
+        iconColor: const Color(0xFFFB923C),
+      );
+    }
+    return null;
   }
 
   @override
@@ -325,41 +392,53 @@ class _MenuScreenState extends State<MenuScreen> {
                 ]),
               ),
             )
-          : RefreshIndicator(
-              onRefresh: _load,
-              child: ListView.builder(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
-                itemCount: _categories.length,
-                itemBuilder: (context, i) {
-                  final cat = _categories[i];
-                  final items = _items
-                      .where((it) => it.categoryId == cat.id)
-                      .toList();
-                  if (items.isEmpty) return const SizedBox.shrink();
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.only(top: 16, bottom: 10),
-                        child: Text(
-                          cat.name,
-                          style: Theme.of(context).textTheme.titleLarge,
-                        ),
-                      ),
-                      for (final item in items)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 10),
-                          child: _MenuItemCard(
-                            item: item,
-                            hasModifiers:
-                                (_groupsByItem[item.id] ?? const []).isNotEmpty,
-                            onTap: () => _onTapItem(item),
-                          ),
-                        ),
-                    ],
-                  );
-                },
-              ),
+          : Column(
+              children: [
+                if (_capacityBanner(cs) != null) _capacityBanner(cs)!,
+                Expanded(
+                  child: RefreshIndicator(
+                    onRefresh: () async {
+                      await _load();
+                      await _refreshCapacity();
+                    },
+                    child: ListView.builder(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+                      itemCount: _categories.length,
+                      itemBuilder: (context, i) {
+                        final cat = _categories[i];
+                        final items = _items
+                            .where((it) => it.categoryId == cat.id)
+                            .toList();
+                        if (items.isEmpty) return const SizedBox.shrink();
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Padding(
+                              padding:
+                                  const EdgeInsets.only(top: 16, bottom: 10),
+                              child: Text(
+                                cat.name,
+                                style: Theme.of(context).textTheme.titleLarge,
+                              ),
+                            ),
+                            for (final item in items)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 10),
+                                child: _MenuItemCard(
+                                  item: item,
+                                  hasModifiers:
+                                      (_groupsByItem[item.id] ?? const [])
+                                          .isNotEmpty,
+                                  onTap: () => _onTapItem(item),
+                                ),
+                              ),
+                          ],
+                        );
+                      },
+                    ),
+                  ),
+                ),
+              ],
             ),
       floatingActionButton: _cart.isEmpty || paused
           ? null
@@ -370,8 +449,52 @@ class _MenuScreenState extends State<MenuScreen> {
                 label: Text('$_cartCount'),
                 child: const Icon(Icons.shopping_bag_outlined),
               ),
-              label: Text('Cart · ${formatCents(_cart.fold(0, (s, e) => s + e.lineTotalCents))}'),
+              label: Text(
+                  'Cart · ${formatCents(_cart.fold(0, (s, e) => s + e.lineTotalCents))}'),
             ),
+    );
+  }
+}
+
+class _CapacityBanner extends StatelessWidget {
+  const _CapacityBanner({
+    required this.message,
+    required this.background,
+    required this.border,
+    required this.iconColor,
+  });
+
+  final String message;
+  final Color background;
+  final Color border;
+  final Color iconColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Material(
+      color: background,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        decoration: BoxDecoration(
+          border: Border(bottom: BorderSide(color: border)),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.schedule_rounded, color: iconColor, size: 20),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                message,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: cs.onSurface.withValues(alpha: 0.85),
+                    ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -668,10 +791,14 @@ class _LoadingView extends StatelessWidget {
           _SkeletonBox(width: 180, height: 28, color: cs.surfaceContainerHigh),
           const SizedBox(height: 20),
           _SkeletonBox(
-              width: double.infinity, height: 96, color: cs.surfaceContainerHigh),
+              width: double.infinity,
+              height: 96,
+              color: cs.surfaceContainerHigh),
           const SizedBox(height: 12),
           _SkeletonBox(
-              width: double.infinity, height: 96, color: cs.surfaceContainerHigh),
+              width: double.infinity,
+              height: 96,
+              color: cs.surfaceContainerHigh),
         ],
       ),
     );

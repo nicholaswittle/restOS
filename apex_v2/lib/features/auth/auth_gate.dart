@@ -9,6 +9,10 @@ import '../../core/demo_backend.dart';
 ///
 /// Demo mode has no session by design — bypass straight to [signedIn] so the
 /// seeded walkthrough keeps working without a fake login.
+///
+/// Elevated access (super admin) is not decided here: [ApexShell] reads
+/// `profiles.is_super_admin` after the session exists and mounts the Admin
+/// console above all OsTier gates.
 class AuthGate extends StatefulWidget {
   const AuthGate({
     super.key,
