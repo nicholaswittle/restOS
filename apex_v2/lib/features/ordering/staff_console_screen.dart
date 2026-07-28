@@ -1,14 +1,16 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/entitlements.dart';
 import 'menu_screen.dart';
+import 'menu_stock_screen.dart';
 import 'ordering_models.dart';
 
-/// Kitchen / staff console — accept, reject, complete, pause ordering.
+/// Kitchen / staff console — accept (+ print), reject, pause, prep.
 class StaffConsoleScreen extends StatefulWidget {
   const StaffConsoleScreen({
     super.key,
@@ -34,6 +36,7 @@ class _StaffConsoleScreenState extends State<StaffConsoleScreen> {
   RestaurantSettingsData? _settings;
   List<_OrderData> _orders = const [];
   String? _expandedId;
+  final Set<String> _knownWaitingIds = {};
 
   final _subs = <StreamSubscription<dynamic>>[];
 
@@ -109,7 +112,7 @@ class _StaffConsoleScreenState extends State<StaffConsoleScreen> {
             .select(
               'id, public_token, status, submitted_at, accepted_at, rejected_at, '
               'completed_at, reject_reason, pickup_minutes, customer_json, notes, '
-              'subtotal_cents, fee_cents, tax_cents, total_cents, '
+              'subtotal_cents, fee_cents, tax_cents, total_cents, payment_status, '
               'order_items(id, name, price_cents, quantity, notes, '
               'order_item_modifiers(name, price_delta_cents))',
             )
@@ -120,6 +123,16 @@ class _StaffConsoleScreenState extends State<StaffConsoleScreen> {
 
       final settingsRow = results[0] as Map<String, dynamic>?;
       final orderRows = (results[1] as List).cast<Map<String, dynamic>>();
+      final nextOrders = orderRows.map(_OrderData.fromMap).toList();
+      final waitingIds = nextOrders
+          .where((o) => o.status == 'waiting')
+          .map((o) => o.id)
+          .toSet();
+      final isNewWaiting =
+          waitingIds.any((id) => !_knownWaitingIds.contains(id));
+      if (quiet && isNewWaiting && _knownWaitingIds.isNotEmpty) {
+        unawaited(SystemSound.play(SystemSoundType.alert));
+      }
 
       if (!mounted) return;
       setState(() {
@@ -128,7 +141,10 @@ class _StaffConsoleScreenState extends State<StaffConsoleScreen> {
         _settings = settingsRow == null
             ? null
             : RestaurantSettingsData.fromMap(settingsRow);
-        _orders = orderRows.map(_OrderData.fromMap).toList();
+        _orders = nextOrders;
+        _knownWaitingIds
+          ..clear()
+          ..addAll(waitingIds);
         _loading = false;
         _error = null;
       });
@@ -156,7 +172,10 @@ class _StaffConsoleScreenState extends State<StaffConsoleScreen> {
       final now = DateTime.now().toUtc().toIso8601String();
       switch (status) {
         case 'accepted':
+          // One tap: accept + done for kitchen. Pay at counter is separate.
+          patch['status'] = 'completed';
           patch['accepted_at'] = now;
+          patch['completed_at'] = now;
         case 'rejected':
           patch['rejected_at'] = now;
           patch['reject_reason'] = reason ?? '';
@@ -169,8 +188,19 @@ class _StaffConsoleScreenState extends State<StaffConsoleScreen> {
           .eq('id', order.id)
           .eq('organization_id', widget.organizationId);
       if (!mounted) return;
-      _snack('Order ${order.publicToken} → $status');
+      final acceptedKitchen = status == 'accepted';
+      _snack(acceptedKitchen
+          ? 'Order ${order.publicToken} accepted — printing ticket'
+          : 'Order ${order.publicToken} → $status');
       await _load(quiet: true);
+      if (acceptedKitchen && mounted) {
+        final matches = _orders.where((o) => o.id == order.id);
+        if (matches.isNotEmpty) {
+          await _showTicket(matches.first);
+        } else {
+          await _showTicket(order);
+        }
+      }
     } catch (e) {
       if (!mounted) return;
       _snack('Could not update order.');
@@ -226,6 +256,73 @@ class _StaffConsoleScreenState extends State<StaffConsoleScreen> {
     }
   }
 
+  Future<void> _bumpPrep(int delta) async {
+    if (!_canManage || _busy || _settings == null) return;
+    final next = (_settings!.prepMinutes + delta).clamp(10, 90);
+    if (next == _settings!.prepMinutes) return;
+    setState(() => _busy = true);
+    try {
+      await _client.from('restaurant_settings').update({
+        'prep_minutes': next,
+      }).eq('restaurant_id', _restaurantId);
+      if (!mounted) return;
+      _snack('Pickup estimate → $next min');
+      await _load(quiet: true);
+    } catch (e) {
+      if (!mounted) return;
+      _snack('Could not update prep time.');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _showTicket(_OrderData order) async {
+    final buf = StringBuffer()
+      ..writeln("JIGSY'S · ONLINE PICKUP")
+      ..writeln('#${order.publicToken}')
+      ..writeln('${order.customerName} · ${order.customerPhone}')
+      ..writeln('Ready in ~${order.pickupMinutes} min')
+      ..writeln('DUE AT PICKUP ${formatCents(order.totalCents)}')
+      ..writeln('---');
+    for (final line in order.items) {
+      buf.writeln('${line.quantity}× ${line.name}');
+      if (line.modifiers.isNotEmpty) {
+        buf.writeln('  ${line.modifiers.join(', ')}');
+      }
+    }
+    if (order.notes.isNotEmpty) buf.writeln('NOTE: ${order.notes}');
+    buf.writeln('---');
+    buf.writeln('Collect on Square at counter.');
+    final text = buf.toString();
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Ticket #${order.publicToken}'),
+        content: SingleChildScrollView(
+          child: SelectableText(
+            text,
+            style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: text));
+              Navigator.pop(ctx);
+              _snack('Ticket copied');
+            },
+            child: const Text('Copy'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Done'),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _openMenu() {
     Navigator.of(context).push(
       MaterialPageRoute(
@@ -234,12 +331,23 @@ class _StaffConsoleScreenState extends State<StaffConsoleScreen> {
     );
   }
 
-  List<_OrderData> get _active => _orders
-      .where((o) => o.status == 'waiting' || o.status == 'accepted')
-      .toList();
+  void _openMenuStock() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) =>
+            MenuStockScreen(organizationId: widget.organizationId),
+      ),
+    );
+  }
+
+  List<_OrderData> get _active =>
+      _orders.where((o) => o.status == 'waiting').toList();
 
   List<_OrderData> get _history => _orders
-      .where((o) => o.status == 'completed' || o.status == 'rejected')
+      .where((o) =>
+          o.status == 'completed' ||
+          o.status == 'rejected' ||
+          o.status == 'accepted')
       .toList();
 
   @override
@@ -257,6 +365,11 @@ class _StaffConsoleScreenState extends State<StaffConsoleScreen> {
       appBar: AppBar(
         title: Text(_restaurantName),
         actions: [
+          IconButton(
+            tooltip: 'Menu availability',
+            onPressed: _openMenuStock,
+            icon: const Icon(Icons.inventory_2_outlined),
+          ),
           IconButton(
             tooltip: 'Preview menu',
             onPressed: _openMenu,
@@ -291,6 +404,37 @@ class _StaffConsoleScreenState extends State<StaffConsoleScreen> {
                 ),
               ),
             Text('Active', style: Theme.of(context).textTheme.titleLarge),
+            if (_canManage && _settings != null) ...[
+              const SizedBox(height: 8),
+              Material(
+                color: cs.surfaceContainer,
+                borderRadius: BorderRadius.circular(16),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Pickup estimate · ${_settings!.prepMinutes} min',
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: '−5 min',
+                        onPressed: _busy ? null : () => _bumpPrep(-5),
+                        icon: const Icon(Icons.remove_circle_outline),
+                      ),
+                      IconButton(
+                        tooltip: '+5 min',
+                        onPressed: _busy ? null : () => _bumpPrep(5),
+                        icon: const Icon(Icons.add_circle_outline),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
             const SizedBox(height: 8),
             if (_active.isEmpty)
               const _EmptyCard(
@@ -314,9 +458,7 @@ class _StaffConsoleScreenState extends State<StaffConsoleScreen> {
                         : null,
                     onReject:
                         o.status == 'waiting' ? () => _reject(o) : null,
-                    onComplete: o.status == 'accepted'
-                        ? () => _setStatus(o, 'completed')
-                        : null,
+                    onPrint: null,
                   ),
                 ),
             const SizedBox(height: 20),
@@ -340,6 +482,10 @@ class _StaffConsoleScreenState extends State<StaffConsoleScreen> {
                     onToggle: () => setState(() {
                       _expandedId = _expandedId == o.id ? null : o.id;
                     }),
+                    onPrint: (o.status == 'completed' ||
+                            o.status == 'accepted')
+                        ? () => _showTicket(o)
+                        : null,
                   ),
                 ),
           ],
@@ -467,7 +613,7 @@ class _OrderCard extends StatelessWidget {
     required this.onToggle,
     this.onAccept,
     this.onReject,
-    this.onComplete,
+    this.onPrint,
   });
 
   final _OrderData order;
@@ -476,7 +622,7 @@ class _OrderCard extends StatelessWidget {
   final VoidCallback onToggle;
   final VoidCallback? onAccept;
   final VoidCallback? onReject;
-  final VoidCallback? onComplete;
+  final VoidCallback? onPrint;
 
   @override
   Widget build(BuildContext context) {
@@ -571,17 +717,17 @@ class _OrderCard extends StatelessWidget {
                     if (onAccept != null)
                       FilledButton(
                         onPressed: busy ? null : onAccept,
-                        child: const Text('Accept'),
+                        child: const Text('Accept & print'),
                       ),
                     if (onReject != null)
                       OutlinedButton(
                         onPressed: busy ? null : onReject,
                         child: const Text('Reject'),
                       ),
-                    if (onComplete != null)
-                      FilledButton.tonal(
-                        onPressed: busy ? null : onComplete,
-                        child: const Text('Complete'),
+                    if (onPrint != null)
+                      OutlinedButton(
+                        onPressed: busy ? null : onPrint,
+                        child: const Text('Re-print'),
                       ),
                   ],
                 ),

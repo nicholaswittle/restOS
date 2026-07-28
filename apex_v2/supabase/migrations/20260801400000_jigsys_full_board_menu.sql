@@ -16,6 +16,7 @@ declare
   c_salad uuid := 'a2000001-0000-4000-8000-000000000007';
   c_subs  uuid := 'a2000001-0000-4000-8000-000000000008';
   c_dess  uuid := 'a2000001-0000-4000-8000-000000000009';
+  -- legacy brew category (removed from online; kept only for migration cleanup)
   c_brew  uuid := 'a2000000-0000-4000-8000-000000000005';
   -- wing sauce groups
   g_w5  uuid := 'a5000001-0000-4000-8000-000000000001';
@@ -68,6 +69,15 @@ begin
   update menu_categories
   set name = 'House Brews To-Go', sort_order = 10
   where id = c_brew;
+
+  -- Alcohol is not sold online / to-go via Apex. Keep any leftover brew SKUs off.
+  update menu_items
+  set available = false
+  where id in (
+    'a3000000-0000-4000-8000-000000000041',
+    'a3000000-0000-4000-8000-000000000042',
+    'a3000000-0000-4000-8000-000000000043'
+  );
 
   -- Clear prior full-board insert if re-run.
   delete from modifier_options
@@ -192,16 +202,6 @@ begin
 
     -- Dessert
     ('a4000001-0000-4000-8000-000000000501', v_rest, v_org, c_dess, 'Peanut Butter Pie (slice)', 'Rich, cold house dessert — by the slice.', 599, true, 1);
-
-  -- Re-enable house brew pack SKUs from the original seed.
-  update menu_items
-  set available = true,
-      category_id = c_brew
-  where id in (
-    'a3000000-0000-4000-8000-000000000041',
-    'a3000000-0000-4000-8000-000000000042',
-    'a3000000-0000-4000-8000-000000000043'
-  );
 
   -- Wing sauce picker (required) for each wing SKU.
   for item, grp in

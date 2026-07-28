@@ -675,13 +675,6 @@ class DemoSeed {
       'name': 'Starters & Sides',
       'sort_order': 4,
     },
-    {
-      'id': 'demo-cat-brews',
-      'restaurant_id': restaurantId,
-      'organization_id': DemoMode.organizationId,
-      'name': 'House Brews To-Go',
-      'sort_order': 5,
-    },
   ];
 
   static final menuItems = <Map<String, dynamic>>[
@@ -875,42 +868,6 @@ class DemoSeed {
       'price_cents': 700,
       'available': true,
       'sort_order': 4,
-    },
-    {
-      'id': 'demo-item-b1',
-      'restaurant_id': restaurantId,
-      'organization_id': DemoMode.organizationId,
-      'category_id': 'demo-cat-brews',
-      'name': 'Big J Double IPA (4-Pack To-Go)',
-      'description':
-          '8.2% ABV. Heavy citrus and pine hop profile with a smooth, malty backbone.',
-      'price_cents': 1600,
-      'available': true,
-      'sort_order': 1,
-    },
-    {
-      'id': 'demo-item-b2',
-      'restaurant_id': restaurantId,
-      'organization_id': DemoMode.organizationId,
-      'category_id': 'demo-cat-brews',
-      'name': 'Citra Wheat Ale (4-Pack To-Go)',
-      'description':
-          '5.4% ABV. Crisp, refreshing American wheat beer bursting with bright tropical notes.',
-      'price_cents': 1400,
-      'available': true,
-      'sort_order': 2,
-    },
-    {
-      'id': 'demo-item-b3',
-      'restaurant_id': restaurantId,
-      'organization_id': DemoMode.organizationId,
-      'category_id': 'demo-cat-brews',
-      'name': 'Enola Amber Lager (4-Pack To-Go)',
-      'description':
-          '5.0% ABV. Smooth, toasted malt character with a clean, classic finish.',
-      'price_cents': 1400,
-      'available': true,
-      'sort_order': 3,
     },
   ];
 
