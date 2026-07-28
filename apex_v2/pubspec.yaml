@@ -1,0 +1,31 @@
+name: apex_v2
+description: Apex v2 — reimagined restaurant scheduling for independent restaurants.
+publish_to: 'none'
+version: 0.1.0
+
+environment:
+  sdk: ^3.5.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  supabase_flutter: ^2.5.0
+  intl: ^0.19.0
+  http: ^1.2.0
+  qr_flutter: ^4.1.0
+  shared_preferences: ^2.5.5
+  mobile_scanner: ^7.4.0
+  crypto: ^3.0.7
+  image_picker: ^1.2.3
+  url_launcher: ^6.3.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  # Tests drive the demo backend through a plain SupabaseClient — no Flutter
+  # bindings needed, so they run in the VM where exceptions are visible.
+  supabase: ^2.0.0
+
+flutter:
+  uses-material-design: true

@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jigsy's Brewpub · Counter Staff Portal &amp; Rush Controls</title>
+  <style>
+    :root {
+      --bg: #120D0A;
+      --card: #1C1510;
+      --card-border: #2A2018;
+      --text: #F4E8D6;
+      --text-muted: #B29E8C;
+      --sauce: #DA5240;
+      --green: #4CAF50;
+      --amber: #FF9800;
+      --blue: #2196F3;
+      --font: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      -webkit-font-smoothing: antialiased;
+    }
+    .header {
+      background: #18110C;
+      border-bottom: 1px solid var(--card-border);
+      padding: 16px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .brand { font-size: 1.2rem; font-weight: 700; color: var(--text); letter-spacing: 0.05em; }
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 0.85rem;
+      font-weight: 700;
+      background: rgba(76, 175, 80, 0.15);
+      color: var(--green);
+      border: 1px solid var(--green);
+    }
+    .status-badge.is-rush {
+      background: rgba(255, 152, 0, 0.15);
+      color: var(--amber);
+      border-color: var(--amber);
+    }
+    .status-badge.is-paused {
+      background: rgba(218, 82, 64, 0.15);
+      color: var(--sauce);
+      border-color: var(--sauce);
+    }
+
+    .main {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 24px;
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      gap: 24px;
+    }
+
+    .controls-card {
+      background: var(--card);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 20px;
+    }
+    .controls-title {
+      font-size: 1.05rem;
+      font-weight: 700;
+      margin-bottom: 16px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .btn {
+      width: 100%;
+      padding: 14px 18px;
+      border-radius: 6px;
+      border: none;
+      font-size: 0.95rem;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 12px;
+      transition: all 0.2s ease;
+    }
+    .btn-rush {
+      background: #D86000;
+      color: #FFF;
+    }
+    .btn-rush:hover { background: #F57C00; }
+    .btn-pause {
+      background: #B23A2B;
+      color: #FFF;
+    }
+    .btn-pause:hover { background: #DA5240; }
+    .btn-chime {
+      background: #2E7D32;
+      color: #FFF;
+    }
+    .btn-chime:hover { background: #3E7C4A; }
+
+    .orders-card {
+      background: var(--card);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 20px;
+    }
+
+    .order-item {
+      background: #241B14;
+      border: 1px solid var(--card-border);
+      border-radius: 6px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    .order-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .order-id { font-size: 1.1rem; font-weight: 700; color: var(--amber); }
+    .order-time { font-size: 0.85rem; color: var(--text-muted); }
+    .order-customer { font-size: 0.95rem; font-weight: 700; margin-bottom: 8px; }
+    .order-lines { font-size: 0.9rem; line-height: 1.5; color: var(--text); }
+    .order-line-item { padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+
+    .order-actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 12px;
+    }
+    .btn-action {
+      padding: 8px 14px;
+      font-size: 0.85rem;
+      font-weight: 700;
+      border-radius: 4px;
+      border: 1px solid var(--card-border);
+      background: #2E231B;
+      color: var(--text);
+      cursor: pointer;
+    }
+    .btn-action:hover { background: #3A2D23; }
+    .btn-action.done { background: rgba(76, 175, 80, 0.2); color: var(--green); border-color: var(--green); }
+
+    @media (max-width: 800px) {
+      .main { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div class="brand">🍕 JIGSY'S BREWPUB · COUNTER STAFF PORTAL</div>
+    <div class="status-badge" id="systemStatusBadge">
+      <span id="statusDot">●</span>
+      <span id="statusText">KITCHEN ONLINE · NORMAL (20m Prep)</span>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="controls-card">
+      <div class="controls-title">⚡ Rush Controls</div>
+      
+      <button class="btn btn-rush" id="btnRush">
+        🔥 1-Tap 'Rush Mode' (+15m Delay)
+      </button>
+
+      <button class="btn btn-pause" id="btnPause">
+        ⏸️ Snooze Web Orders (30m)
+      </button>
+
+      <button class="btn btn-chime" id="btnChime">
+        🔔 Test Audio Alert Chime
+      </button>
+
+      <div style="margin-top: 20px; font-size: 0.85rem; color: var(--text-muted); line-height: 1.5;">
+        <strong>Thermal Printer Status:</strong><br>
+        ✅ Connected to Counter Epson TM-T88VI<br>
+        <i>Auto-printing enabled for web orders.</i>
+      </div>
+    </div>
+
+    <div class="orders-card">
+      <div class="controls-title">📋 Live Order Queue</div>
+
+      <div class="order-item" id="order-104">
+        <div class="order-header">
+          <div class="order-id">ORDER #104 · PICKUP AT 6:15 PM</div>
+          <div class="order-time">Received 2 mins ago</div>
+        </div>
+        <div class="order-customer">👤 Dave M. · (717) 555-0199 · Paid Online ($48.50)</div>
+        <div class="order-lines">
+          <div class="order-line-item">1x <strong>RED TRAY - 12 CUT</strong> (Pepperoni, Extra Cheese)</div>
+          <div class="order-line-item">1x <strong>DOUBLE WHITE - 6 CUT</strong></div>
+          <div class="order-line-item">1x <strong>WINGS (20 PC)</strong> - Garlic Sauce</div>
+        </div>
+        <div class="order-actions">
+          <button class="btn-action" onclick="printOrder(104)">🖨️ Re-Print Ticket</button>
+          <button class="btn-action done" onclick="completeOrder(104)">✅ Mark Ready for Pickup</button>
+        </div>
+      </div>
+
+      <div class="order-item" id="order-103">
+        <div class="order-header">
+          <div class="order-id">ORDER #103 · PICKUP AT 5:45 PM</div>
+          <div class="order-time">Received 22 mins ago</div>
+        </div>
+        <div class="order-customer">👤 Sarah K. · (717) 555-0142 · Paid Online ($32.00)</div>
+        <div class="order-lines">
+          <div class="order-line-item">1x <strong>CHICK FIL J SPECIALTY TRAY - 6 CUT</strong></div>
+          <div class="order-line-item">1x <strong>WINGS (10 PC)</strong> - Hot Sauce</div>
+        </div>
+        <div class="order-actions">
+          <button class="btn-action" onclick="printOrder(103)">🖨️ Re-Print Ticket</button>
+          <button class="btn-action done" onclick="completeOrder(103)">✅ Completed</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    var isRush = false;
+    var isPaused = false;
+
+    var badge = document.getElementById("systemStatusBadge");
+    var statusText = document.getElementById("statusText");
+
+    document.getElementById("btnRush").addEventListener("click", function() {
+      isRush = !isRush;
+      if (isRush && isPaused) isPaused = false;
+
+      if (isRush) {
+        badge.className = "status-badge is-rush";
+        statusText.textContent = "🔥 RUSH MODE ACTIVE (+15m Prep Delay)";
+        this.textContent = "✅ Deactivate Rush Mode";
+      } else {
+        badge.className = "status-badge";
+        statusText.textContent = "KITCHEN ONLINE · NORMAL (20m Prep)";
+        this.textContent = "🔥 1-Tap 'Rush Mode' (+15m Delay)";
+      }
+    });
+
+    document.getElementById("btnPause").addEventListener("click", function() {
+      isPaused = !isPaused;
+      if (isPaused && isRush) isRush = false;
+
+      if (isPaused) {
+        badge.className = "status-badge is-paused";
+        statusText.textContent = "⏸️ WEB ORDERS SNOOZED (30m Pause)";
+        this.textContent = "▶️ Resume Web Orders";
+      } else {
+        badge.className = "status-badge";
+        statusText.textContent = "KITCHEN ONLINE · NORMAL (20m Prep)";
+        this.textContent = "⏸️ Snooze Web Orders (30m)";
+      }
+    });
+
+    document.getElementById("btnChime").addEventListener("click", function() {
+      alert("🔔 [Audio Alert Chime] Simulated new incoming order sound!");
+    });
+
+    function printOrder(id) {
+      alert("🖨️ Ticket #" + id + " sent to kitchen thermal printer!");
+    }
+
+    function completeOrder(id) {
+      var el = document.getElementById("order-" + id);
+      if (el) {
+        el.style.opacity = "0.5";
+        alert("Order #" + id + " marked ready for pickup!");
+      }
+    }
+  </script>
+</body>
+</html>
